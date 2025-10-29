@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Metadata Catalog & Data Lineage</title>
+<script src="https://unpkg.com/cytoscape@3.26.0/dist/cytoscape.min.js"></script>
+<style>
+body {
+  font-family: 'Segoe UI', sans-serif;
+  background-color: #fafafa;
+  margin: 0;
+  padding: 1rem;
+  color: #111827;
+}
+
+h2 {
+  margin: 0;
+}
+
+.grid-container {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: 1rem;
+  align-items: start;
+}
+
+.card {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 1rem;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+}
+
+button {
+  padding: 6px 12px;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+  font-weight: 500;
+}
+
+button:hover { opacity: 0.9; }
+
+.btn-primary { background-color: #2563eb; color: #fff; }
+.btn-danger  { background-color: #dc2626; color: #fff; }
+
+input, select, textarea {
+  border: 1px solid #d1d5db;
+  border-radius: 5px;
+  padding: 6px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.flex { display: flex; gap: 0.5rem; align-items: center; }
+.flex-col { display: flex; flex-direction: column; gap: 0.5rem; }
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th, td {
+  padding: 0.5rem;
+  text-align: left;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+#graph {
+  height: 350px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  margin-top: 0.5rem;
+}
+
+.tag {
+  background: #e0f2fe;
+  color: #0369a1;
+  padding: 2px 6px;
+  border-radius: 12px;
+  font-size: 12px;
+}
+
+.alert {
+  margin-top: 0.5rem;
+  background: #f0fdf4;
+  border: 1px solid #86efac;
+  color: #166534;
+  padding: 6px;
+  border-radius: 4px;
+  font-size: 14px;
+}
+
+</style>
+</head>
+<body>
+
+<h2>Metadata Catalog & Data Lineage</h2>
+<p><small>Use X-API-KEY header: <b>editor-key-123</b> (edit) or <b>viewer-key-123</b> (view-only)</small></p>
+
+<!-- Dashboard & Filters -->
+<div class="grid-container">
+  <div class="card" id="dashboardCard">
+    <h3>Dashboard</h3>
+    <div id="dashboard"></div>
+  </div>
+
+  <div class="card">
+    <h3>Search & Filters</h3>
+    <div class="flex">
+      <select id="typeFilter"></select>
+      <select id="tagFilter"></select>
+      <button class="btn-primary" onclick="loadAssets()">Apply</button>
+    </div>
+  </div>
+</div>
+
+<!-- Assets + Create + Lineage + Fraud in grid -->
+<div class="grid-container" style="margin-top:1rem;">
+  <div class="card">
+    <h3>Assets</h3>
+    <table id="assetTable"></table>
+  </div>
+
+  <div class="card flex-col">
+    <h3>Create / Update Asset</h3>
+    <input id="aId" placeholder="id (for update)">
+    <input id="aName" placeholder="name">
+    <select id="aType">
+      <option value="policy">policy</option>
+      <option value="claim">claim</option>
+      <option value="reserve_model">reserve_model</option>
+    </select>
+    <textarea id="aDesc" placeholder="description"></textarea>
+    <input id="aTags" placeholder="tags comma separated (e.g., PII,internal)">
+    <div class="flex">
+      <button class="btn-primary" onclick="createAsset()">Create</button>
+      <button class="btn-primary" onclick="updateAsset()">Update</button>
+      <button class="btn-danger" onclick="deleteAsset()">Delete</button>
+    </div>
+  </div>
+</div>
+
+<!-- Lineage and Fraud sections fixed in height -->
+<div class="grid-container" style="margin-top:1rem;">
+  <div class="card" style="grid-column: span 1;">
+    <h3>Lineage Graph</h3>
+    <p style="font-size:13px;color:#555;">Click an asset row to visualize its lineage.</p>
+    <div id="graph"></div>
+  </div>
+
+  <div class="card flex-col" style="grid-column: span 1;">
+    <h3>Add Lineage Edge</h3>
+    <div class="flex-col">
+      <input id="srcId" placeholder="src_asset_id">
+      <input id="dstId" placeholder="dst_asset_id">
+      <input id="rel" placeholder="relation (feeds/drives)">
+      <button class="btn-primary" onclick="addEdge()">Add Edge</button>
+    </div>
+
+    <h3>Fraud Scoring</h3>
+    <div class="flex-col">
+      <input id="cNum" placeholder="claim_number">
+      <input id="pNum" placeholder="policy_number">
+      <input id="amt" placeholder="amount">
+      <input id="chan" placeholder="channel (online/agent)">
+      <input id="city" placeholder="city">
+      <input id="prior" placeholder="prior_claims">
+      <button class="btn-primary" onclick="scoreClaim()">Score Claim</button>
+      <pre id="fraudOut"></pre>
+    </div>
+  </div>
+</div>
+
+<div id="alertBox"></div>
+
+<script>
+const API_KEY = "editor-key-123";
+const BASE = "http://127.0.0.1:5000";
+
+async function api(path, opts = {}) {
+  opts.headers = { "Content-Type": "application/json", "X-API-KEY": API_KEY };
+  const res = await fetch(BASE + path, opts);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+function showAlert(msg) {
+  const el = document.getElementById('alertBox');
+  el.innerHTML = `<div class='alert'>${msg}</div>`;
+  setTimeout(() => el.innerHTML = '', 3000);
+}
+
+async function loadDashboard() {
+  const d = await api('/dashboard');
+  document.getElementById('dashboard').innerHTML = `
+    <b>Total claims:</b> ${d.total_claims}<br>
+    <b>Suspicious claims:</b> ${d.suspicious_claims}<br>
+    <small>Assets: policy ${d.assets_by_type.policy}, claim ${d.assets_by_type.claim}, reserve_model ${d.assets_by_type.reserve_model}</small>
+  `;
+  const typeSel = document.getElementById('typeFilter');
+  typeSel.innerHTML = '<option value="">Any</option><option>policy</option><option>claim</option><option>reserve_model</option>';
+  const tagSel = document.getElementById('tagFilter');
+  tagSel.innerHTML = '<option value="">Any</option>' + d.tags.map(t => `<option>${t}</option>`).join('');
+}
+
+async function loadAssets() {
+  const t = document.getElementById('typeFilter').value;
+  const g = document.getElementById('tagFilter').value;
+  const q = `/assets${t||g?`?${t?`type=${t}`:''}${t&&g?'&':''}${g?`tag=${g}`:''}`:''}`;
+  const data = await api(q);
+  const table = document.getElementById('assetTable');
+  table.innerHTML = `
+    <tr><th>id</th><th>name</th><th>type</th><th>tags</th><th>created</th></tr>
+    ${data.map(a => `
+      <tr onclick='showLineage(${a.id})' style='cursor:pointer;'>
+        <td>${a.id}</td><td>${a.name}</td><td>${a.type}</td>
+        <td>${a.tags.map(t=>`<span class='tag'>${t}</span>`).join(' ')}</td>
+        <td>${new Date(a.created_at).toLocaleString()}</td>
+      </tr>`).join('')}
+  `;
+}
+
+async function createAsset() {
+  const payload = {
+    name: aName.value, type: aType.value, description: aDesc.value,
+    tags: aTags.value.split(',').map(x=>x.trim()).filter(Boolean)
+  };
+  await api('/assets', { method:'POST', body:JSON.stringify(payload) });
+  showAlert('✅ Asset created');
+  await loadAssets(); await loadDashboard();
+}
+
+async function updateAsset() {
+  const id = aId.value;
+  if(!id) return alert('Enter ID');
+  const payload = {
+    name: aName.value, type: aType.value, description: aDesc.value,
+    tags: aTags.value.split(',').map(x=>x.trim()).filter(Boolean)
+  };
+  await api(`/assets/${id}`, { method:'PUT', body:JSON.stringify(payload) });
+  showAlert('✅ Asset updated');
+  await loadAssets(); await loadDashboard();
+}
+
+async function deleteAsset() {
+  const id = aId.value;
+  if(!id) return alert('Enter ID');
+  await api(`/assets/${id}`, { method:'DELETE' });
+  showAlert('🗑️ Asset deleted');
+  await loadAssets(); await loadDashboard();
+}
+
+async function addEdge() {
+  const src = parseInt(document.getElementById('srcId').value);
+  const dst = parseInt(document.getElementById('dstId').value);
+  const relValue = document.getElementById('rel').value || 'derives';
+
+  if (!src || !dst || isNaN(src) || isNaN(dst)) {
+    showAlert('❌ Please enter valid numeric src and dst asset IDs');
+    return;
+  }
+
+  try {
+    await api('/lineage', {
+      method: 'POST',
+      body: JSON.stringify({ src_asset_id: src, dst_asset_id: dst, relation: relValue })
+    });
+    showAlert(`✅ Edge added: ${src} → ${dst}`);
+    await showLineage(src);
+  } catch (err) {
+    console.error(err);
+    showAlert('❌ Failed to add edge (check IDs or server logs)');
+  }
+}
+
+
+async function showLineage(id) {
+  const data = await api('/lineage/'+id);
+  const g = document.getElementById('graph');
+  g.innerHTML = '';
+  if(!data.nodes.length){ g.innerHTML = '<p>No lineage found.</p>'; return; }
+  const cy = cytoscape({
+    container: g,
+    elements: [
+      ...data.nodes.map(n=>({data:{id:String(n.id),label:`${n.name}\n(${n.type})`}})),
+      ...data.edges.map(e=>({data:{id:String(e.id),source:String(e.source),target:String(e.target),label:e.relation}}))
+    ],
+    layout: { name:'breadthfirst', directed:true },
+    style:[
+      { selector:'node', style:{'label':'data(label)','text-wrap':'wrap','text-max-width':'100','background-color':'#dbeafe','border-width':1,'border-color':'#3b82f6'}},
+      { selector:'edge', style:{'curve-style':'bezier','target-arrow-shape':'triangle','label':'data(label)','font-size':'10px','line-color':'#9ca3af','target-arrow-color':'#9ca3af'}}
+    ]
+  });
+}
+
+async function scoreClaim() {
+  const payload = {
+    claim_number: document.getElementById('cNum').value,
+    policy_number: document.getElementById('pNum').value,
+    amount: parseFloat(document.getElementById('amt').value || 0),
+    channel: document.getElementById('chan').value || 'agent',
+    city: document.getElementById('city').value || '',
+    prior_claims: parseInt(document.getElementById('prior').value || 0)
+  };
+
+  console.log("Sending payload:", payload);  // Debug
+
+  const res = await fetch(`${BASE}/claims/score`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-API-KEY": API_KEY
+    },
+    body: JSON.stringify(payload)
+  });
+
+  const data = await res.json();
+  console.log("Received:", data);  // Debug
+
+  document.getElementById('fraudOut').textContent = JSON.stringify(data, null, 2);
+  showAlert(`✅ Claim ${data.claim_number} scored: ${data.fraud_label}`);
+  await loadDashboard();
+}
+
+
+loadDashboard();
+loadAssets();
+</script>
+</body>
+</html>
