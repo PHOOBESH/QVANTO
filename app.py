@@ -336,47 +336,34 @@ def score_claim():
     data = request.json or {}
     db = SessionLocal()
     try:
-        # Parse safely and convert types
-        amount = float(data.get("amount", 0))
-        prior_claims = int(data.get("prior_claims", 0))
-        channel = (data.get("channel") or "").lower().strip()
-        city = (data.get("city") or "").lower().strip()
+        claim = db.query(Claim).filter_by(claim_number=data["claim_number"]).first()
+        if not claim:
+            claim = Claim(claim_number=data["claim_number"])
+            db.add(claim)
 
-        # Create temporary claim object for rule evaluation
-        claim = Claim(
-            claim_number=data.get("claim_number", "NA"),
-            policy_number=data.get("policy_number", "NA"),
-            amount=amount,
-            channel=channel,
-            city=city,
-            prior_claims=prior_claims,
-        )
+        claim.policy_number = data.get("policy_number", "")
+        claim.amount = float(data.get("amount", 0))
+        claim.channel = (data.get("channel") or "agent").lower()
+        claim.city = (data.get("city") or "").lower()
+        claim.prior_claims = int(data.get("prior_claims", 0))
 
-        # Apply rules
+        # calculate score
         score = 0.0
         reasons = []
-        for rule, weight, note in RULES:
-            try:
-                if rule(claim):
-                    score += weight
-                    reasons.append(note)
-            except Exception:
-                pass
-
-        # Assign results
+        for rule, w, note in RULES:
+            if rule(claim):
+                score += w
+                reasons.append(note)
         claim.fraud_score = min(score, 100.0)
         claim.fraud_label = "SUSPICIOUS" if claim.fraud_score >= THRESHOLD else "OK"
 
-        # Store in DB
-        db.add(claim)
         db.commit()
-
         return jsonify({
             "claim_number": claim.claim_number,
-            "fraud_label": claim.fraud_label,
             "fraud_score": claim.fraud_score,
-            "reasons": reasons,
-        }), 200
+            "fraud_label": claim.fraud_label,
+            "reasons": reasons
+        })
     except Exception as e:
         db.rollback()
         return jsonify({"error": str(e)}), 500
